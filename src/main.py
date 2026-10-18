@@ -6,8 +6,11 @@ from src.rate_limiter import RateLimiter
 
 app = FastAPI(
     title="Rate Limiter API",
-    description="An API demonstrating Sliding Window and Token Bucket rate limiting.",
-    version="1.0.0",
+    description=(
+        "An API demonstrating Sliding Window and Token Bucket "
+        "rate limiting, with request statistics."
+    ),
+    version="1.1.0",
 )
 
 # Create one shared limiter for the application.
@@ -24,6 +27,7 @@ def home():
         "message": "Welcome to the Rate Limiter API!",
         "docs": "/docs",
         "health": "/health",
+        "stats": "/api/stats",
     }
 
 
@@ -72,3 +76,9 @@ def get_resource(request: Request):
         },
         headers=headers,
     )
+
+
+@app.get("/api/stats")
+def get_statistics():
+    # Reading statistics does not count as a rate-limited request.
+    return limiter.get_stats()

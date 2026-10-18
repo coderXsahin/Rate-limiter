@@ -14,6 +14,11 @@ class RateLimiter:
         self.buckets = {}
         self.lock = threading.Lock()
 
+        # Statistics counters
+        self.total_requests = 0
+        self.allowed_requests = 0
+        self.rejected_requests = 0
+
     def check(
         self,
         client_id,
@@ -25,13 +30,43 @@ class RateLimiter:
     ):
         with self.lock:
             if self.strategy == "policy_a":
-                return self._sliding_window(
+                result = self._sliding_window(
                     client_id, endpoint, limit, window_ms
                 )
+            else:
+                result = self._token_bucket(
+                    client_id, endpoint, capacity, refill_rate
+                )
 
-            return self._token_bucket(
-                client_id, endpoint, capacity, refill_rate
-            )
+            allowed, remaining, reset_ms = result
+
+            # Record the outcome of every evaluated request.
+            self.total_requests += 1
+
+            if allowed:
+                self.allowed_requests += 1
+            else:
+                self.rejected_requests += 1
+
+            return allowed, remaining, reset_ms
+
+    def get_stats(self):
+        with self.lock:
+            if self.total_requests == 0:
+                rejection_rate = 0.0
+            else:
+                rejection_rate = (
+                    self.rejected_requests
+                    / self.total_requests
+                    * 100
+                )
+
+            return {
+                "total_requests": self.total_requests,
+                "allowed_requests": self.allowed_requests,
+                "rejected_requests": self.rejected_requests,
+                "rejection_rate_percent": round(rejection_rate, 2),
+            }
 
     # Policy A: Sliding Window
     def _sliding_window(self, client_id, endpoint, limit, window_ms):
