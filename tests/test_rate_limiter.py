@@ -79,3 +79,22 @@ def test_token_bucket_isolates_clients():
 
     assert alice_second[0] is False
     assert bob_first == (True, 0, 0)
+
+
+def test_sliding_window_strategy_configuration():
+    limiter = RateLimiter(strategy="policy_a")
+
+    assert limiter.strategy == "policy_a"
+
+
+def test_token_bucket_strategy_configuration():
+    limiter = RateLimiter(strategy="policy_b")
+
+    assert limiter.strategy == "policy_b"
+
+
+def test_invalid_strategy_is_rejected():
+    import pytest
+
+    with pytest.raises(ValueError, match="Unknown strategy"):
+        RateLimiter(strategy="policy_c")

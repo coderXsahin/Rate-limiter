@@ -68,6 +68,7 @@ def test_stats_are_zero_initially():
         "allowed_requests": 0,
         "rejected_requests": 0,
         "rejection_rate_percent": 0.0,
+        "strategy": limiter.strategy,
     }
 
 
@@ -81,7 +82,7 @@ def test_stats_track_allowed_and_rejected_requests():
     response = client.get("/api/resource")
     assert response.status_code == 429
 
-    # Statistics requests are not included in the counters.
+    # Statistics requests are not counted in the totals.
     response = client.get("/api/stats")
 
     assert response.status_code == 200
@@ -90,4 +91,5 @@ def test_stats_track_allowed_and_rejected_requests():
         "allowed_requests": 5,
         "rejected_requests": 1,
         "rejection_rate_percent": 16.67,
+        "strategy": limiter.strategy,
     }

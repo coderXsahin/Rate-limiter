@@ -1,24 +1,35 @@
 
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from src.rate_limiter import RateLimiter
 
+
+# Read the algorithm from an environment variable.
+# Default to Sliding Window when no value is provided.
+RATE_LIMIT_STRATEGY = os.getenv(
+    "RATE_LIMIT_STRATEGY", "policy_a"
+).strip().lower()
+
+# RateLimiter validates the selected strategy at startup.
+limiter = RateLimiter(strategy=RATE_LIMIT_STRATEGY)
+
+
 app = FastAPI(
     title="Rate Limiter API",
     description=(
-        "An API demonstrating Sliding Window and Token Bucket "
-        "rate limiting, with request statistics."
+        "An API demonstrating configurable Sliding Window "
+        "and Token Bucket rate limiting, with request statistics."
     ),
-    version="1.1.0",
+    version="1.2.0",
 )
 
-# Create one shared limiter for the application.
-limiter = RateLimiter(strategy="policy_a")
-
-# Configuration for the Sliding Window strategy.
 REQUEST_LIMIT = 5
 WINDOW_MS = 60_000
+BUCKET_CAPACITY = 5
+REFILL_RATE = 1
 
 
 @app.get("/")
@@ -28,6 +39,7 @@ def home():
         "docs": "/docs",
         "health": "/health",
         "stats": "/api/stats",
+        "strategy": limiter.strategy,
     }
 
 
@@ -38,16 +50,15 @@ def health():
 
 @app.get("/api/resource")
 def get_resource(request: Request):
-    # Use the caller's IP address as the client identifier.
     client_id = request.client.host if request.client else "unknown"
 
     allowed, remaining, reset_ms = limiter.check(
-        client_id,
-        "/api/resource",
-        REQUEST_LIMIT,
-        WINDOW_MS,
-        5,
-        1,
+        client_id=client_id,
+        endpoint="/api/resource",
+        limit=REQUEST_LIMIT,
+        window_ms=WINDOW_MS,
+        capacity=BUCKET_CAPACITY,
+        refill_rate=REFILL_RATE,
     )
 
     headers = {
@@ -80,5 +91,9 @@ def get_resource(request: Request):
 
 @app.get("/api/stats")
 def get_statistics():
-    # Reading statistics does not count as a rate-limited request.
-    return limiter.get_stats()
+    stats = limiter.get_stats()
+
+    return {
+        **stats,
+        "strategy": limiter.strategy,
+    }
