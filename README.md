@@ -1,16 +1,18 @@
-
 # Rate Limiter API
 
-A Python rate-limiting API built with FastAPI, implementing the Sliding Window and Token Bucket algorithms.
+A Python rate-limiting API built with FastAPI, implementing the **Sliding Window** and **Token Bucket** algorithms, with optional Redis-backed rate limiting for shared state across multiple application instances.
 
 ## Features
 
 - Sliding Window rate-limiting algorithm
 - Token Bucket rate-limiting algorithm
-- Configurable algorithm selection using an environment variable
+- Configurable strategy and storage backend using environment variables
+- In-memory rate limiting for local development
+- Redis-backed Sliding Window rate limiting
+- Atomic request checks using a Redis Lua script
 - Per-client and per-endpoint rate limiting
-- Thread-safe request processing
-- HTTP 429 responses when the limit is exceeded
+- Thread-safe request processing within an application instance
+- HTTP `429 Too Many Requests` responses when limits are exceeded
 - Rate-limit response headers
 - Statistics endpoint for allowed and rejected requests
 - Interactive API documentation with Swagger UI
@@ -21,6 +23,9 @@ A Python rate-limiting API built with FastAPI, implementing the Sliding Window a
 - Python
 - FastAPI
 - Uvicorn
+- Redis
+- Docker
+- redis-py
 - pytest
 - HTTPX
 
@@ -28,14 +33,12 @@ A Python rate-limiting API built with FastAPI, implementing the Sliding Window a
 
 ### 1. Clone the repository
 
-```bash
+```powershell
 git clone https://github.com/coderXsahin/Rate-Limiter.git
 cd Rate-Limiter
 ```
 
-Replace `coderXsahin` with your GitHub username.
-
-### 2. Create a virtual environment
+### 2. Create and activate a virtual environment
 
 Windows PowerShell:
 
@@ -50,21 +53,23 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-### 4. Start the API
+### 4. Start the API with the in-memory backend
 
 ```powershell
 python -m uvicorn src.main:app --reload
 ```
 
-By default, the API uses the Sliding Window algorithm.
+By default, the API uses the Sliding Window algorithm with in-memory storage. Redis is not required for this mode.
 
-## Configure the Algorithm
+Open the interactive API documentation at:
 
-The active algorithm is selected using the `RATE_LIMIT_STRATEGY` environment variable.
+http://127.0.0.1:8000/docs
+
+## Configure the Rate-Limiting Strategy
+
+Set `RATE_LIMIT_STRATEGY` to select the algorithm.
 
 ### Sliding Window
-
-Windows PowerShell:
 
 ```powershell
 $env:RATE_LIMIT_STRATEGY = "policy_a"
@@ -73,31 +78,99 @@ python -m uvicorn src.main:app --reload
 
 ### Token Bucket
 
-Windows PowerShell:
-
 ```powershell
 $env:RATE_LIMIT_STRATEGY = "policy_b"
 python -m uvicorn src.main:app --reload
 ```
 
-To return to the default configuration:
+The Token Bucket strategy currently supports the in-memory backend only.
+
+To restore the default strategy:
 
 ```powershell
 Remove-Item Env:RATE_LIMIT_STRATEGY -ErrorAction SilentlyContinue
+```
+
+Stop the running server with `Ctrl+C` before restarting it with a different configuration.
+
+## Redis Setup
+
+Redis enables multiple application instances to share rate-limit state.
+
+### 1. Start Redis with Docker
+
+Make sure Docker Desktop is running, then execute:
+
+```powershell
+docker run --name rate-limiter-redis -p 6379:6379 -d redis:7-alpine
+```
+
+If the container already exists but is stopped, start it with:
+
+```powershell
+docker start rate-limiter-redis
+```
+
+### 2. Verify the Redis connection
+
+```powershell
+docker exec -it rate-limiter-redis redis-cli ping
+```
+
+Expected output:
+
+```text
+PONG
+```
+
+### 3. Enable the Redis backend
+
+Set the backend and strategy:
+
+```powershell
+$env:RATE_LIMIT_BACKEND = "redis"
+$env:RATE_LIMIT_STRATEGY = "policy_a"
+```
+
+Start the API:
+
+```powershell
 python -m uvicorn src.main:app --reload
 ```
 
-The selected strategy is available from the home endpoint and statistics endpoint.
+The API now uses Redis to store and enforce Sliding Window rate-limit state.
+
+To return to in-memory mode:
+
+```powershell
+Remove-Item Env:RATE_LIMIT_BACKEND -ErrorAction SilentlyContinue
+Remove-Item Env:RATE_LIMIT_STRATEGY -ErrorAction SilentlyContinue
+```
+
+Then restart the API.
+
+### Backend and strategy compatibility
+
+| Backend | Strategy | Supported |
+|---|---|---|
+| `memory` | `policy_a` — Sliding Window | Yes |
+| `memory` | `policy_b` — Token Bucket | Yes |
+| `redis` | `policy_a` — Sliding Window | Yes |
+| `redis` | `policy_b` — Token Bucket | No |
+
+The Redis implementation uses a Lua script to perform the Sliding Window check and request recording atomically. This helps prevent concurrent application instances from independently allowing requests beyond the configured limit.
+
+Redis connection settings can be configured with the `REDIS_URL` environment variable. The default is `redis://localhost:6379/0`.
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/` | API welcome message and active strategy |
+| GET | `/` | Welcome message and active configuration |
 | GET | `/health` | Health check |
 | GET | `/api/resource` | Rate-limited resource |
 | GET | `/api/stats` | Request statistics |
-| GET | `/docs` | Interactive Swagger documentation |
+| GET | `/docs` | Interactive Swagger UI documentation |
 
 ## Rate-Limit Configuration
 
@@ -108,19 +181,23 @@ The default resource configuration is:
 - Token Bucket capacity: 5 tokens
 - Token refill rate: 1 token per second
 
+Rate limits are applied per client IP address and endpoint.
+
 ## Rate-Limit Headers
 
-The resource endpoint returns:
+The `/api/resource` endpoint returns these headers:
 
 - `X-RateLimit-Limit`
 - `X-RateLimit-Remaining`
 - `X-RateLimit-Reset-Ms`
 
-Requests exceeding the configured limit receive HTTP `429 Too Many Requests`.
+Requests that exceed the configured limit receive HTTP `429 Too Many Requests`.
 
 ## Statistics Example
 
-The `/api/stats` endpoint returns the number of evaluated, allowed, and rejected requests, along with the rejection rate and active strategy.
+The `/api/stats` endpoint reports evaluated requests, allowed requests, rejected requests, rejection rate, and the active configuration.
+
+Example response:
 
 ```json
 {
@@ -128,27 +205,36 @@ The `/api/stats` endpoint returns the number of evaluated, allowed, and rejected
   "allowed_requests": 5,
   "rejected_requests": 1,
   "rejection_rate_percent": 16.67,
-  "strategy": "policy_a"
+  "strategy": "policy_a",
+  "backend": "redis"
 }
 ```
 
-Statistics are stored in memory and reset when the application restarts.
+Statistics are stored in application memory. They reset when the application restarts and are **not shared across multiple application instances**, even when Redis is used for rate limiting.
 
 ## Run Tests
+
+Activate your virtual environment, ensure your local Redis container is running for the Redis integration tests, and run:
 
 ```powershell
 python -m pytest -v
 ```
 
+**Important:** The Redis integration tests use Redis database 0 and call `FLUSHDB`. Run them only against a dedicated development or test Redis database, never against a database containing important or production data.
+
 ## Current Limitations
 
-- Statistics and rate-limit state are stored in application memory.
-- Multiple application instances do not share rate-limit state.
-- The current client identifier uses the request's client IP address.
+- Redis currently supports the Sliding Window strategy only.
+- Request statistics are stored in application memory.
+- In-memory rate-limit state is not shared across application instances.
+- The client identifier currently uses the request's client IP address.
+- Production deployments need appropriate Redis authentication, network security, and configuration.
 
 ## Future Improvements
 
-- Redis-backed shared rate limiting
+- Redis-backed statistics shared across instances
+- Redis support for the Token Bucket strategy
+- Configurable limits per endpoint and client
 - More detailed monitoring and metrics
-- Configurable limits per endpoint
 - Improved production deployment configuration
+- Stronger client identification and proxy-aware IP handling
