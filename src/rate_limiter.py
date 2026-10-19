@@ -3,13 +3,28 @@ import time
 import threading
 from collections import deque
 
+from src.redis_client import (
+    check_redis_sliding_window,
+    redis_client,
+)
+
 
 class RateLimiter:
-    def __init__(self, strategy="policy_a"):
+    def __init__(self, strategy="policy_a", backend="memory"):
         if strategy not in ("policy_a", "policy_b"):
             raise ValueError(f"Unknown strategy: {strategy}")
 
+        if backend not in ("memory", "redis"):
+            raise ValueError(f"Unknown backend: {backend}")
+
+        if backend == "redis" and strategy != "policy_a":
+            raise ValueError(
+                "Redis backend currently supports policy_a only"
+            )
+
         self.strategy = strategy
+        self.backend = backend
+
         self.requests = {}
         self.buckets = {}
         self.lock = threading.Lock()
@@ -29,18 +44,32 @@ class RateLimiter:
         refill_rate,
     ):
         with self.lock:
-            if self.strategy == "policy_a":
+            if self.backend == "redis":
+                result = check_redis_sliding_window(
+                    client=redis_client,
+                    client_id=client_id,
+                    endpoint=endpoint,
+                    limit=limit,
+                    window_ms=window_ms,
+                )
+            elif self.strategy == "policy_a":
                 result = self._sliding_window(
-                    client_id, endpoint, limit, window_ms
+                    client_id,
+                    endpoint,
+                    limit,
+                    window_ms,
                 )
             else:
                 result = self._token_bucket(
-                    client_id, endpoint, capacity, refill_rate
+                    client_id,
+                    endpoint,
+                    capacity,
+                    refill_rate,
                 )
 
             allowed, remaining, reset_ms = result
 
-            # Record the outcome of every evaluated request.
+            # Record every evaluated request.
             self.total_requests += 1
 
             if allowed:
@@ -65,11 +94,15 @@ class RateLimiter:
                 "total_requests": self.total_requests,
                 "allowed_requests": self.allowed_requests,
                 "rejected_requests": self.rejected_requests,
-                "rejection_rate_percent": round(rejection_rate, 2),
+                "rejection_rate_percent": round(
+                    rejection_rate, 2
+                ),
             }
 
-    # Policy A: Sliding Window
-    def _sliding_window(self, client_id, endpoint, limit, window_ms):
+    # Policy A: In-memory Sliding Window
+    def _sliding_window(
+        self, client_id, endpoint, limit, window_ms
+    ):
         key = (client_id, endpoint)
         now = time.monotonic()
         window_seconds = window_ms / 1000.0
@@ -79,7 +112,10 @@ class RateLimiter:
 
         timestamps = self.requests[key]
 
-        while timestamps and timestamps[0] + window_seconds <= now:
+        while (
+            timestamps
+            and timestamps[0] + window_seconds <= now
+        ):
             timestamps.popleft()
 
         if limit <= 0:
@@ -87,7 +123,15 @@ class RateLimiter:
 
         if len(timestamps) >= limit:
             reset_ms = max(
-                0, int((timestamps[0] + window_seconds - now) * 1000)
+                0,
+                int(
+                    (
+                        timestamps[0]
+                        + window_seconds
+                        - now
+                    )
+                    * 1000
+                ),
             )
             return False, 0, reset_ms
 
@@ -95,13 +139,23 @@ class RateLimiter:
         remaining = limit - len(timestamps)
 
         reset_ms = max(
-            0, int((timestamps[0] + window_seconds - now) * 1000)
+            0,
+            int(
+                (
+                    timestamps[0]
+                    + window_seconds
+                    - now
+                )
+                * 1000
+            ),
         )
 
         return True, remaining, reset_ms
 
-    # Policy B: Token Bucket
-    def _token_bucket(self, client_id, endpoint, capacity, refill_rate):
+    # Policy B: In-memory Token Bucket
+    def _token_bucket(
+        self, client_id, endpoint, capacity, refill_rate
+    ):
         key = (client_id, endpoint)
         now = time.monotonic()
 
@@ -112,7 +166,6 @@ class RateLimiter:
             }
 
         bucket = self.buckets[key]
-
         elapsed = now - bucket["last_time"]
 
         if elapsed > 0 and refill_rate > 0:
@@ -135,6 +188,8 @@ class RateLimiter:
             return False, 0, 0
 
         tokens_needed = 1.0 - bucket["tokens"]
-        reset_ms = max(0, int(tokens_needed / refill_rate * 1000))
+        reset_ms = max(
+            0, int(tokens_needed / refill_rate * 1000)
+        )
 
         return False, 0, reset_ms

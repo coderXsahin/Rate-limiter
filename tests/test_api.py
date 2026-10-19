@@ -59,6 +59,7 @@ def test_rate_limit_headers_are_returned():
     assert "X-RateLimit-Reset-Ms" in response.headers
 
 
+
 def test_stats_are_zero_initially():
     response = client.get("/api/stats")
 
@@ -69,7 +70,10 @@ def test_stats_are_zero_initially():
         "rejected_requests": 0,
         "rejection_rate_percent": 0.0,
         "strategy": limiter.strategy,
+        "backend": limiter.backend,
     }
+
+
 
 
 def test_stats_track_allowed_and_rejected_requests():
@@ -92,4 +96,6 @@ def test_stats_track_allowed_and_rejected_requests():
         "rejected_requests": 1,
         "rejection_rate_percent": 16.67,
         "strategy": limiter.strategy,
+        "backend": limiter.backend,
     }
+
